@@ -1,0 +1,160 @@
+# =============================================================
+#  MEGARAM CASA – Projet-RabbitMQ
+#  Docker Compose – Orchestration complète des microservices
+# =============================================================
+
+services:
+
+  # ─────────────────────────────────────────
+  #  RabbitMQ Message Broker
+  # ─────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: megaram-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-admin123}
+      RABBITMQ_DEFAULT_VHOST: /
+    ports:
+      - "5672:5672"     # AMQP protocol
+      - "15672:15672"   # Management dashboard
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - megaram-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ─────────────────────────────────────────
+  #  Microservice Films (Producer RabbitMQ)
+  # ─────────────────────────────────────────
+  microservice-films:
+    build:
+      context: ./microservice-films
+      dockerfile: Dockerfile
+    container_name: megaram-films
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-admin}:${RABBITMQ_PASS:-admin123}@rabbitmq:5672/
+    ports:
+      - "3001:3001"
+    networks:
+      - megaram-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # ─────────────────────────────────────────
+  #  Microservice Projections (Consumer RabbitMQ)
+  # ─────────────────────────────────────────
+  microservice-projections:
+    build:
+      context: ./microservice-projections
+      dockerfile: Dockerfile
+    container_name: megaram-projections
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3002
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-admin}:${RABBITMQ_PASS:-admin123}@rabbitmq:5672/
+    ports:
+      - "3002:3002"
+    networks:
+      - megaram-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # ─────────────────────────────────────────
+  #  Microservice Réservations (PHP / Slim)
+  # ─────────────────────────────────────────
+  microservice-reservations:
+    build:
+      context: ./microservice-reservations
+      dockerfile: Dockerfile
+    container_name: megaram-reservations
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      PORT: 3003
+    ports:
+      - "3003:3003"
+    networks:
+      - megaram-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:3003/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  # ─────────────────────────────────────────
+  #  API Gateway
+  # ─────────────────────────────────────────
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: megaram-gateway
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # Downstream service URLs (internal Docker network)
+      FILMS_SERVICE_URL: http://microservice-films:3001
+      PROJECTIONS_SERVICE_URL: http://microservice-projections:3002
+      RESERVATIONS_SERVICE_URL: http://microservice-reservations:3003
+    ports:
+      - "3000:3000"
+    networks:
+      - megaram-network
+    depends_on:
+      microservice-films:
+        condition: service_healthy
+      microservice-projections:
+        condition: service_healthy
+      microservice-reservations:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+# =============================================================
+#  Volumes persistants
+# =============================================================
+volumes:
+  rabbitmq_data:
+    driver: local
+
+# =============================================================
+#  Réseau interne partagé
+# =============================================================
+networks:
+  megaram-network:
+    driver: bridge
+    name: megaram-network
